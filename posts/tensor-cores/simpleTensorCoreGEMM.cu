@@ -85,7 +85,20 @@ const int WMMA_K = 16;
 //  3) Neither A nor B are transposed.
 // Note: This is NOT a high performance example but is for demonstration purposes only
 //       For a high performance code please use the GEMM provided in cuBLAS.
-__global__ void wmma_example(u_int8_t *a, u_int8_t *b, int *c, int M, int N, int K, int alpha, int beta)
+template <typename T, typename S>
+__host__ __device__ void int2int8(const T &frag, S &result)
+{
+   // unsigned int temp;
+#pragma unroll
+   for (int t = 0; t < result.num_elements; t++)
+   {
+      // temp = frag.x[t];
+      // result.x[t] = temp;
+      result.x[t] = frag.x[t];
+   }
+}
+
+__global__ void wmma_example(int *a, int *b, int *c, int M, int N, int K, int alpha, int beta)
 {
    // Leading dimensions. Packed with no transpositions.
    int lda = M;
@@ -97,8 +110,12 @@ __global__ void wmma_example(u_int8_t *a, u_int8_t *b, int *c, int M, int N, int
    int warpN = (blockIdx.y * blockDim.y + threadIdx.y);
 
    // Declare the fragments
+   wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, int> a_frag_int;
+   wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, int> b_frag_int;
+
    wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, u_int8_t, wmma::col_major> a_frag;
    wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, u_int8_t, wmma::col_major> b_frag;
+
    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, int> acc_frag;
    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, int> c_frag;
 
@@ -117,8 +134,11 @@ __global__ void wmma_example(u_int8_t *a, u_int8_t *b, int *c, int M, int N, int
       if (aRow < M && aCol < K && bRow < K && bCol < N)
       {
          // Load the inputs
-         wmma::load_matrix_sync(a_frag, a + aRow + aCol * lda, lda);
-         wmma::load_matrix_sync(b_frag, b + bRow + bCol * ldb, ldb);
+         wmma::load_matrix_sync(a_frag_int, a + aRow + aCol * lda, lda, wmma::mem_col_major);
+         wmma::load_matrix_sync(b_frag_int, b + bRow + bCol * ldb, ldb, wmma::mem_col_major);
+
+         int2int8<wmma::fragment<wmma::accumulator, 16, 16, 16, int>, wmma::fragment<wmma::matrix_a, 16, 16, 16, u_int8_t, wmma::col_major>>(a_frag_int, a_frag);
+         int2int8<wmma::fragment<wmma::accumulator, 16, 16, 16, int>, wmma::fragment<wmma::matrix_b, 16, 16, 16, u_int8_t, wmma::col_major>>(b_frag_int, b_frag);
 
          // Perform the matrix multiplication
          wmma::mma_sync(acc_frag, a_frag, b_frag, acc_frag);
@@ -144,7 +164,7 @@ __global__ void wmma_example(u_int8_t *a, u_int8_t *b, int *c, int M, int N, int
    }
 }
 
-__global__ void convertFp32ToFp16(u_int8_t *out, float *in, int n)
+__global__ void convertFp32ToFp16(int *out, float *in, int n)
 {
    int idx = blockDim.x * blockIdx.x + threadIdx.x;
    if (idx < n)
@@ -157,8 +177,8 @@ int main(int argc, char *argv[])
 {
    float *a_fp32;
    float *b_fp32;
-   u_int8_t *a_fp16;
-   u_int8_t *b_fp16;
+   int *a_fp16;
+   int *b_fp16;
 
    float *c;
    int *c_cublas;
@@ -189,8 +209,8 @@ int main(int argc, char *argv[])
 
    cudaErrCheck(cudaMalloc((void **)&a_fp32, MATRIX_M * MATRIX_K * sizeof(float)));
    cudaErrCheck(cudaMalloc((void **)&b_fp32, MATRIX_K * MATRIX_N * sizeof(float)));
-   cudaErrCheck(cudaMalloc((void **)&a_fp16, MATRIX_M * MATRIX_K * sizeof(u_int8_t)));
-   cudaErrCheck(cudaMalloc((void **)&b_fp16, MATRIX_K * MATRIX_N * sizeof(u_int8_t)));
+   cudaErrCheck(cudaMalloc((void **)&a_fp16, MATRIX_M * MATRIX_K * sizeof(int)));
+   cudaErrCheck(cudaMalloc((void **)&b_fp16, MATRIX_K * MATRIX_N * sizeof(int)));
 
    cudaErrCheck(cudaMalloc((void **)&c, MATRIX_M * MATRIX_N * sizeof(float)));
    cudaErrCheck(cudaMalloc((void **)&c_cublas, MATRIX_M * MATRIX_N * sizeof(int)));
