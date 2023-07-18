@@ -85,20 +85,7 @@ const int WMMA_K = 16;
 //  3) Neither A nor B are transposed.
 // Note: This is NOT a high performance example but is for demonstration purposes only
 //       For a high performance code please use the GEMM provided in cuBLAS.
-template <typename T, typename S>
-__host__ __device__ void int2int8(const T &frag, S &result)
-{
-   // unsigned int temp;
-#pragma unroll
-   for (int t = 0; t < result.num_elements; t++)
-   {
-      // temp = frag.x[t];
-      // result.x[t] = temp;
-      result.x[t] = frag.x[t];
-   }
-}
-
-__global__ void wmma_example(int *a, int *b, int *c, int M, int N, int K, int alpha, int beta)
+__global__ void wmma_example(half *a, half *b, float *c, int M, int N, int K, float alpha, float beta)
 {
    // Leading dimensions. Packed with no transpositions.
    int lda = M;
@@ -110,14 +97,10 @@ __global__ void wmma_example(int *a, int *b, int *c, int M, int N, int K, int al
    int warpN = (blockIdx.y * blockDim.y + threadIdx.y);
 
    // Declare the fragments
-   wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, int> a_frag_int;
-   wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, int> b_frag_int;
-
-   wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, u_int8_t, wmma::col_major> a_frag;
-   wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, u_int8_t, wmma::col_major> b_frag;
-
-   wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, int> acc_frag;
-   wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, int> c_frag;
+   wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, wmma::col_major> a_frag;
+   wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, wmma::col_major> b_frag;
+   wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> acc_frag;
+   wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> c_frag;
 
    wmma::fill_fragment(acc_frag, 0.0f);
 
@@ -134,11 +117,8 @@ __global__ void wmma_example(int *a, int *b, int *c, int M, int N, int K, int al
       if (aRow < M && aCol < K && bRow < K && bCol < N)
       {
          // Load the inputs
-         wmma::load_matrix_sync(a_frag_int, a + aRow + aCol * lda, lda, wmma::mem_col_major);
-         wmma::load_matrix_sync(b_frag_int, b + bRow + bCol * ldb, ldb, wmma::mem_col_major);
-
-         int2int8<wmma::fragment<wmma::accumulator, 16, 16, 16, int>, wmma::fragment<wmma::matrix_a, 16, 16, 16, u_int8_t, wmma::col_major>>(a_frag_int, a_frag);
-         int2int8<wmma::fragment<wmma::accumulator, 16, 16, 16, int>, wmma::fragment<wmma::matrix_b, 16, 16, 16, u_int8_t, wmma::col_major>>(b_frag_int, b_frag);
+         wmma::load_matrix_sync(a_frag, a + aRow + aCol * lda, lda);
+         wmma::load_matrix_sync(b_frag, b + bRow + bCol * ldb, ldb);
 
          // Perform the matrix multiplication
          wmma::mma_sync(acc_frag, a_frag, b_frag, acc_frag);
@@ -164,7 +144,7 @@ __global__ void wmma_example(int *a, int *b, int *c, int M, int N, int K, int al
    }
 }
 
-__global__ void convertFp32ToFp16(int *out, float *in, int n)
+__global__ void convertFp32ToFp16(half *out, float *in, int n)
 {
    int idx = blockDim.x * blockIdx.x + threadIdx.x;
    if (idx < n)
@@ -177,15 +157,15 @@ int main(int argc, char *argv[])
 {
    float *a_fp32;
    float *b_fp32;
-   int *a_fp16;
-   int *b_fp16;
+   half *a_fp16;
+   half *b_fp16;
 
    float *c;
-   int *c_cublas;
-   int *c_wmma;
+   float *c_cublas;
+   float *c_wmma;
 
-   int *c_host_cublas;
-   int *c_host_wmma;
+   float *c_host_cublas;
+   float *c_host_wmma;
 
    curandGenerator_t gen;
    cublasHandle_t cublasHandle;
@@ -209,15 +189,15 @@ int main(int argc, char *argv[])
 
    cudaErrCheck(cudaMalloc((void **)&a_fp32, MATRIX_M * MATRIX_K * sizeof(float)));
    cudaErrCheck(cudaMalloc((void **)&b_fp32, MATRIX_K * MATRIX_N * sizeof(float)));
-   cudaErrCheck(cudaMalloc((void **)&a_fp16, MATRIX_M * MATRIX_K * sizeof(int)));
-   cudaErrCheck(cudaMalloc((void **)&b_fp16, MATRIX_K * MATRIX_N * sizeof(int)));
+   cudaErrCheck(cudaMalloc((void **)&a_fp16, MATRIX_M * MATRIX_K * sizeof(half)));
+   cudaErrCheck(cudaMalloc((void **)&b_fp16, MATRIX_K * MATRIX_N * sizeof(half)));
 
    cudaErrCheck(cudaMalloc((void **)&c, MATRIX_M * MATRIX_N * sizeof(float)));
-   cudaErrCheck(cudaMalloc((void **)&c_cublas, MATRIX_M * MATRIX_N * sizeof(int)));
-   cudaErrCheck(cudaMalloc((void **)&c_wmma, MATRIX_M * MATRIX_N * sizeof(int)));
+   cudaErrCheck(cudaMalloc((void **)&c_cublas, MATRIX_M * MATRIX_N * sizeof(float)));
+   cudaErrCheck(cudaMalloc((void **)&c_wmma, MATRIX_M * MATRIX_N * sizeof(float)));
 
-   c_host_cublas = (int *)malloc(MATRIX_M * MATRIX_N * sizeof(int));
-   c_host_wmma = (int *)malloc(MATRIX_M * MATRIX_N * sizeof(int));
+   c_host_cublas = (float *)malloc(MATRIX_M * MATRIX_N * sizeof(float));
+   c_host_wmma = (float *)malloc(MATRIX_M * MATRIX_N * sizeof(float));
 
    curandErrCheck(curandCreateGenerator(&gen, CURAND_RNG_PSEUDO_DEFAULT));
    curandErrCheck(curandSetPseudoRandomGeneratorSeed(gen, 1337ULL));
@@ -233,8 +213,8 @@ int main(int argc, char *argv[])
 
    curandErrCheck(curandDestroyGenerator(gen));
 
-   cudaErrCheck(cudaMemcpy(c_cublas, c, MATRIX_M * MATRIX_N * sizeof(int), cudaMemcpyDeviceToDevice));
-   cudaErrCheck(cudaMemcpy(c_wmma, c, MATRIX_M * MATRIX_N * sizeof(int), cudaMemcpyDeviceToDevice));
+   cudaErrCheck(cudaMemcpy(c_cublas, c, MATRIX_M * MATRIX_N * sizeof(float), cudaMemcpyDeviceToDevice));
+   cudaErrCheck(cudaMemcpy(c_wmma, c, MATRIX_M * MATRIX_N * sizeof(float), cudaMemcpyDeviceToDevice));
 
    float alpha = 2.0f;
    float beta = 2.0f;
@@ -273,7 +253,7 @@ int main(int argc, char *argv[])
    // Warm up cuBLAS run ends
 
    // reset the c_cublas buffer
-   cudaErrCheck(cudaMemcpy(c_cublas, c, MATRIX_M * MATRIX_N * sizeof(int), cudaMemcpyDeviceToDevice));
+   cudaErrCheck(cudaMemcpy(c_cublas, c, MATRIX_M * MATRIX_N * sizeof(float), cudaMemcpyDeviceToDevice));
 
    cudaErrCheck(cudaEventRecord(startcublas));
    cublasErrCheck(cublasGemmEx(cublasHandle, CUBLAS_OP_N, CUBLAS_OP_N,
@@ -289,42 +269,42 @@ int main(int argc, char *argv[])
 
    // Error checking
    printf("\nChecking results...\n");
-   cudaErrCheck(cudaMemcpy(c_host_wmma, c_wmma, MATRIX_M * MATRIX_N * sizeof(int), cudaMemcpyDeviceToHost));
-   cudaErrCheck(cudaMemcpy(c_host_cublas, c_cublas, MATRIX_M * MATRIX_N * sizeof(int), cudaMemcpyDeviceToHost));
+   cudaErrCheck(cudaMemcpy(c_host_wmma, c_wmma, MATRIX_M * MATRIX_N * sizeof(float), cudaMemcpyDeviceToHost));
+   cudaErrCheck(cudaMemcpy(c_host_cublas, c_cublas, MATRIX_M * MATRIX_N * sizeof(float), cudaMemcpyDeviceToHost));
 
    // 0.01% relative tolerance. 1e-5 absolute tolerance.
    int errors = 0;
    for (int i = 0; i < MATRIX_M * MATRIX_N; i++)
    {
-      int v1 = c_host_wmma[i];
-      int v2 = c_host_cublas[i];
-      int diff = fabs(v1 - v2);
-      int relative_err = diff / v2;
-      int eps = 1e-4;
+      float v1 = c_host_wmma[i];
+      float v2 = c_host_cublas[i];
+      float diff = fabs(v1 - v2);
+      float relative_err = diff / v2;
+      float eps = 1e-4;
       if ((relative_err >= eps))
       {
          errors++;
          if (errors < 10)
-            printf("%d %d\n", v1, v2);
+            printf("%f %f\n", v1, v2);
       }
    }
 
-   // if (errors > 0)
-   // {
-   //    printf("WMMA does not agree with cuBLAS! %d errors!\n", errors);
-   // }
-   // else
-   // {
-   printf("Results verified: cublas and WMMA agree.\n\n");
-   float wmmaTime;
-   float cublasTime;
-   cudaErrCheck(cudaEventElapsedTime(&wmmaTime, startWMMA, stopWMMA));
-   cudaErrCheck(cudaEventElapsedTime(&cublasTime, startcublas, stopcublas));
-   printf("wmma took %fms\n", wmmaTime);
-   printf("cublas took %fms\n", cublasTime);
+   if (errors > 0)
+   {
+      printf("WMMA does not agree with cuBLAS! %d errors!\n", errors);
+   }
+   else
+   {
+      printf("Results verified: cublas and WMMA agree.\n\n");
+      float wmmaTime;
+      float cublasTime;
+      cudaErrCheck(cudaEventElapsedTime(&wmmaTime, startWMMA, stopWMMA));
+      cudaErrCheck(cudaEventElapsedTime(&cublasTime, startcublas, stopcublas));
+      printf("wmma took %fms\n", wmmaTime);
+      printf("cublas took %fms\n", cublasTime);
 
-   printf("\nFor a faster code using wmma you should check out the cudaTensorCoreGemm sample in the CUDA Toolkit.\nThis code was written as a demo only!\n\n");
-   // }
+      printf("\nFor a faster code using wmma you should check out the cudaTensorCoreGemm sample in the CUDA Toolkit.\nThis code was written as a demo only!\n\n");
+   }
 
    cudaErrCheck(cudaEventDestroy(startWMMA));
    cudaErrCheck(cudaEventDestroy(stopWMMA));
